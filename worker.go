@@ -109,7 +109,7 @@ func (w *Worker) Peer(id int64) *Peer {
 }
 func (w *Worker) Broadcast(message Message) {
 	for _, peer := range w.peers {
-		peer.SendMessage(message)
+		peer.SendMessageAsync(message)
 		log.Info().Msgf("send %+v to %+v", message, peer)
 	}
 }

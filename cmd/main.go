@@ -124,9 +124,7 @@ func main() {
 					worker.SetPeer(peer)
 				}
 			}
-		case "broadcast":
-			txt := cmd[1]
-			worker.Broadcast(chatMessage{text: txt})
-		}
+		case "peval":
+
 	}
 }

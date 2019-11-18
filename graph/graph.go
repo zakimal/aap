@@ -349,6 +349,37 @@ func (s ShortestPath) To(vid int64) (path []Node, weight float64) {
 	Reverse(path)
 	return path, math.Min(weight, s.dist[s.index[vid]])
 }
+func (s ShortestPath) Nodes() []Node {
+	return s.nodes
+}
+func (s ShortestPath) DistOf(id int64) float64 {
+	return s.dist[s.index[id]]
+}
+func (s ShortestPath) Add(u Node) int {
+	uid := u.ID()
+	if _, exists := s.index[uid]; exists {
+		panic("shortestPath: adding existing node")
+	}
+	idx := len(s.nodes)
+	s.index[uid] = idx
+	s.nodes = append(s.nodes, u)
+	s.dist = append(s.dist, math.Inf(1))
+	s.next = append(s.next, -1)
+	return idx
+}
+func (s ShortestPath) Set(to int, weight float64, mid int) {
+	s.dist[to] = weight
+	s.next[to] = mid
+	s.changed[s.invIndex[to]] = struct{}{}
+}
+func (s ShortestPath) ChangedNodeID() []int64 {
+	ns := make([]int64, len(s.changed))
+	i := 0
+	for k := range s.changed {
+		ns[i] = k
+	}
+	return ns
+}
 
 func isSame(a, b float64) bool {
 	return a == b || (math.IsNaN(a) && math.IsNaN(b))

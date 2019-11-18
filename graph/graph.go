@@ -1,4 +1,4 @@
-package aap
+package graph
 
 import (
 	"encoding/csv"
@@ -10,26 +10,26 @@ import (
 )
 
 type Node struct {
-	id int64
-	ownerID string
+	id      int64
+	ownerID int64
 }
 
-func NewNode(id int64, ownerID string) Node {
+func NewNode(id int64, ownerID int64) Node {
 	return Node{
-		id:    id,
+		id:      id,
 		ownerID: ownerID,
 	}
 }
 func (n Node) ID() int64 {
 	return n.id
 }
-func (n Node) OwnerID() string {
+func (n Node) OwnerID() int64 {
 	return n.ownerID
 }
 
 type WeightedEdge struct {
 	F, T Node
-	W float64
+	W    float64
 }
 
 func (e WeightedEdge) From() Node {
@@ -48,7 +48,7 @@ type WeightedDirectedGraph struct {
 	to      map[int64]map[int64]WeightedEdge
 	self    float64
 	absent  float64
-	nodeIDs Set
+	nodeIDs UIDPool
 }
 
 func NewWeightedDirectedGraph(self, absent float64) *WeightedDirectedGraph {
@@ -58,19 +58,19 @@ func NewWeightedDirectedGraph(self, absent float64) *WeightedDirectedGraph {
 		to:      make(map[int64]map[int64]WeightedEdge),
 		self:    self,
 		absent:  absent,
-		nodeIDs: NewSet(),
+		nodeIDs: NewUIDPool(),
 	}
 }
-func NewWeightedDirectedGraphFromCSV(address string, self, absent float64) *WeightedDirectedGraph {
+func NewWeightedDirectedGraphFromCSV(workerId int64, self, absent float64) *WeightedDirectedGraph {
 	g := NewWeightedDirectedGraph(self, absent)
 
-	nodes, err := os.Open("data/nodes/" + address)
+	nodes, err := os.Open("data/nodes/" + fmt.Sprintf("%d", workerId) + ".txt")
 	if err != nil {
 		panic(err)
 	}
 	defer nodes.Close()
 
-	node2owner := make(map[int64]string)
+	node2owner := make(map[int64]int64)
 
 	reader := csv.NewReader(nodes)
 	reader.Read() // skip header
@@ -82,13 +82,13 @@ func NewWeightedDirectedGraphFromCSV(address string, self, absent float64) *Weig
 			panic(err)
 		}
 
-		id, _ := strconv.ParseInt(record[0], 10, 64)
-		ownerID:= record[1]
+		nodeId, _ := strconv.ParseInt(record[0], 10, 64)
+		ownerId, _ := strconv.ParseInt(record[0], 10, 64)
 
-		node2owner[id] = ownerID
+		node2owner[nodeId] = ownerId
 	}
 
-	edges, err := os.Open("data/edges/" + address)
+	edges, err := os.Open("data/edges/" + fmt.Sprintf("%d", workerId) + ".txt")
 	if err != nil {
 		panic(err)
 	}
@@ -117,21 +117,6 @@ func NewWeightedDirectedGraphFromCSV(address string, self, absent float64) *Weig
 		g.SetWeightedEdge(weightedEdge)
 	}
 	return g
-}
-func (g *WeightedDirectedGraph) NewNode() Node {
-	if len(g.nodes) == 0 {
-		return Node{
-			id:      0,
-			ownerID: "",
-		}
-	}
-	if int64(len(g.nodes)) == MAX {
-		panic("WeightedDirectedGraph: cannot allocate node: no ID slot")
-	}
-	return Node{
-		id:      g.nodeIDs.NewID(),
-		ownerID: "",
-	}
 }
 func (g *WeightedDirectedGraph) Node(id int64) Node {
 	return g.nodes[id]
@@ -199,13 +184,6 @@ func (g *WeightedDirectedGraph) RemoveNode(id int64) {
 	}
 	delete(g.to, id)
 	g.nodeIDs.Release(id)
-}
-func (g *WeightedDirectedGraph) NewWeightedEdge(from, to Node, weight float64) WeightedEdge {
-	return WeightedEdge{
-		F: from,
-		T: to,
-		W: weight,
-	}
 }
 func (g *WeightedDirectedGraph) WeightedEdge(uid, vid int64) WeightedEdge {
 	edge, ok := g.from[uid][vid]
@@ -293,7 +271,7 @@ func (g *WeightedDirectedGraph) RemoveWeightedEdge(fid, tid int64) {
 	delete(g.to[tid], fid)
 }
 
-type Shortest struct {
+type ShortestPath struct {
 	from             Node
 	nodes            []Node
 	index            map[int64]int
@@ -304,7 +282,7 @@ type Shortest struct {
 	changed          Int64Set
 }
 
-func NewShortestFrom(u Node, nodes []Node) Shortest {
+func NewShortestFrom(u Node, nodes []Node) *ShortestPath {
 	index := make(map[int64]int, len(nodes))
 	invIndex := make(map[int]int64, len(nodes))
 	uid := u.ID()
@@ -317,27 +295,27 @@ func NewShortestFrom(u Node, nodes []Node) Shortest {
 	for k, v := range index {
 		invIndex[v] = k
 	}
-	p := Shortest{
+	p := ShortestPath{
 		from:             u,
-		nodes:         nodes,
-		index:          index,
-		invIndex:invIndex,
+		nodes:            nodes,
+		index:            index,
+		invIndex:         invIndex,
 		dist:             make([]float64, len(nodes)),
 		next:             make([]int, len(nodes)),
 		hasNegativeCycle: false,
-		changed: map[int64]struct{}{},
+		changed:          map[int64]struct{}{},
 	}
 	for i := range nodes {
 		p.dist[i] = math.Inf(1)
 		p.next[i] = -1
 	}
 	p.dist[index[uid]] = 0
-	return p
+	return &p
 }
-func (s Shortest) From() Node {
+func (s ShortestPath) From() Node {
 	return s.from
 }
-func (s Shortest) To(vid int64) (path []Node, weight float64) {
+func (s ShortestPath) To(vid int64) (path []Node, weight float64) {
 	to, ok := s.index[vid]
 	if !ok || math.IsInf(s.dist[to], 1) {
 		return nil, math.Inf(1)

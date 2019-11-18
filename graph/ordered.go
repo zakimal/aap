@@ -1,8 +1,8 @@
-package aap
+package graph
 
 type ByID []Node
 
-func (ns ByID) Len() int { return len(ns)}
+func (ns ByID) Len() int { return len(ns) }
 func (ns ByID) Less(i, j int) bool {
 	return ns[i].ID() < ns[j].ID()
 }
@@ -34,6 +34,7 @@ func (ns BySliceValues) Swap(i, j int) {
 }
 
 type BySliceIDs [][]Node
+
 func (ns BySliceIDs) Len() int { return len(ns) }
 func (ns BySliceIDs) Less(i, j int) bool {
 	a, b := ns[i], ns[j]
@@ -56,6 +57,7 @@ func (ns BySliceIDs) Swap(i, j int) {
 }
 
 type Int64Slice []int64
+
 func (s Int64Slice) Len() int           { return len(s) }
 func (s Int64Slice) Less(i, j int) bool { return s[i] < s[j] }
 func (s Int64Slice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }

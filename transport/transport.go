@@ -1,0 +1,14 @@
+package transport
+
+import (
+	"fmt"
+	"net"
+)
+
+type Transport interface {
+	fmt.Stringer
+	Listen(host string, port uint16) (net.Listener, error)
+	Dial(address string) (net.Conn, error)
+	IP(address net.Addr) net.IP
+	Port(address net.Addr) uint16
+}

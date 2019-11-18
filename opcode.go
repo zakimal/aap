@@ -44,11 +44,11 @@ func MessageFromOpcode(op Opcode) (Message, error) {
 	defer mutex.Unlock()
 	typ, exist := opcodes[op]
 	if !exist {
-		return nil, errors.Errorf("There is no message type registered to opcode [%d]\n", op)
+		return nil, errors.Errorf("There is no messageReceiver type registered to opcode [%d]\n", op)
 	}
 	msg, ok := reflect.New(reflect.TypeOf(typ)).Elem().Interface().(Message)
 	if !ok {
-		return nil, errors.Errorf("Invalid message type associated to opcode [%d]\n", op)
+		return nil, errors.Errorf("Invalid messageReceiver type associated to opcode [%d]\n", op)
 	}
 	return msg, nil
 }
@@ -62,7 +62,7 @@ func OpcodeFromMessage(msg Message) (Opcode, error) {
 	}
 	op, exist := messages[typ]
 	if !exist {
-		return OpcodeNil, errors.Errorf("There is no opcode registered for message type %v\n", typ)
+		return OpcodeNil, errors.Errorf("There is no opcode registered for messageReceiver type %v\n", typ)
 	}
 	return op, nil
 }
@@ -89,5 +89,3 @@ func resetOpcodes() {
 		reflect.TypeOf((*MessageNil)(nil)).Elem(): OpcodeNil,
 	}
 }
-
-var OpcodeChat Opcode

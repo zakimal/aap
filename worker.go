@@ -1,47 +1,52 @@
 package aap
 
 import (
-	"github.com/pkg/errors"
-	"github.com/zakimal/aap/log"
-	"math"
 	"fmt"
+	"github.com/pkg/errors"
+	"github.com/zakimal/aap/graph"
+	"github.com/zakimal/aap/log"
+	"github.com/zakimal/aap/transport"
+	"math"
 	"net"
+	"sync"
 	"sync/atomic"
 )
 
 type Worker struct {
-	ID        string
-	transport tcp
-	listener  net.Listener
-	host      string
-	port      uint16
-	Peers     []*Peer
-	graph     *WeightedDirectedGraph
-	shortest  Shortest
-	kill      chan chan struct{}
-	killOnce  uint32
+	ID                    int64
+	transport             transport.Transport
+	listener              net.Listener
+	host                  string
+	port                  uint16
+	peers                 map[int64]*Peer
+	recvQueue             sync.Map // map[opcode]ReceiveHandle
+	weightedDirectedGraph *graph.WeightedDirectedGraph
+	shortest              *graph.ShortestPath
+	kill                  chan chan struct{}
+	killOnce              uint32
 }
 
-func NewWorker(id string, host string, port uint16) (*Worker, error) {
-	tcp := NewTCP()
+
+func NewWorker(id int64, host string, port uint16) (*Worker, error) {
+	tcp := transport.NewTCP()
 	listener, err := tcp.Listen(host, port)
 	if err != nil {
-		return nil, errors.Errorf("failed to create listener for Peers on port %d", port)
+		return nil, errors.Errorf("failed to create listener for peers on port %d", port)
 	}
-	graph := NewWeightedDirectedGraphFromCSV(id,0.0, math.Inf(1))
-	nodes := graph.Nodes()
-	from := graph.Node(0)
+	weightedDirectedGraph := graph.NewWeightedDirectedGraphFromCSV(id, 0.0, math.Inf(1))
+	nodes := weightedDirectedGraph.Nodes()
+	from := weightedDirectedGraph.Node(0)
 	worker := Worker{
-		ID:        id,
-		transport: tcp,
-		listener:  listener,
-		host:      host,
-		port:      port,
-		Peers:     make([]*Peer, 0),
-		graph:     graph,
-		shortest:  NewShortestFrom(from, nodes),
-		kill:      make(chan chan struct{}, 1),
-		killOnce:  0,
+		ID:                    id,
+		transport:             tcp,
+		listener:              listener,
+		host:                  host,
+		port:                  port,
+		peers:                 make(map[int64]*Peer),
+		weightedDirectedGraph: weightedDirectedGraph,
+		shortest:              graph.NewShortestFrom(from, nodes),
+		kill:                  make(chan chan struct{}, 1),
+		killOnce:              0,
 	}
 	return &worker, nil
 }
@@ -57,7 +62,7 @@ func (w *Worker) Port() uint16 {
 func (w *Worker) Listen() {
 	for {
 		select {
-		case signal := <- w.kill:
+		case signal := <-w.kill:
 			close(signal)
 			return
 		default:
@@ -68,7 +73,8 @@ func (w *Worker) Listen() {
 		}
 		peer := NewPeer(w, conn)
 		peer.init()
-		log.Info().Msgf("accepted connection with peer from %s", peer.RemoteAddress())
+		w.SetPeer(peer)
+		log.Info().Msgf("Accepted connection with peer from %s", peer.RemoteAddress())
 	}
 }
 func (w *Worker) Dial(address string) (*Peer, error) {
@@ -78,26 +84,40 @@ func (w *Worker) Dial(address string) (*Peer, error) {
 	}
 	peer := NewPeer(w, conn)
 	peer.init()
-	log.Info().Msgf("connected with peer at %s", peer.RemoteAddress())
+	w.SetPeer(peer)
+	log.Info().Msgf("Connected with peer at %s", address)
 	return peer, nil
 }
+func (w *Worker) Receive(op Opcode) <-chan Message {
+	c, _ := w.recvQueue.LoadOrStore(op, ReceiveHandle{hub: make(chan Message), lock: make(chan struct{}, 1)})
+	return c.(ReceiveHandle).hub
+}
+func (w *Worker) LockOnReceive(op Opcode) ReceiveHandle {
+	c, _ := w.recvQueue.LoadOrStore(op, ReceiveHandle{hub: make(chan Message), lock: make(chan struct{}, 1)})
+	recv := c.(ReceiveHandle)
+	recv.lock <- struct{}{}
+	return recv
+}
+func (w *Worker) RegisterPeer(peer *Peer) {
+
+}
+func (w *Worker) Peers() map[int64]*Peer {
+	return w.peers
+}
+func (w *Worker) Peer(id int64) *Peer {
+	return w.peers[id]
+}
 func (w *Worker) Broadcast(message Message) {
-	for _, peer := range w.Peers {
-		log.Info().Msgf("sending %+v to %+v", message, peer)
-		peer.SendMessageAsync(message)
+	for _, peer := range w.peers {
+		peer.SendMessage(message)
+		log.Info().Msgf("send %+v to %+v", message, peer)
 	}
 }
 func (w *Worker) SetPeer(peer *Peer) {
-	w.Peers = append(w.Peers, peer)
+	w.peers[peer.ID] = peer
 }
-func (w *Worker) RemovePeer(peer *Peer) {
-	peers := make([]*Peer, 0)
-	for _, p := range w.Peers {
-		if p.RemoteAddress() != peer.RemoteAddress() {
-			peers = append(peers, p)
-		}
-	}
-	w.Peers = peers
+func (w *Worker) RemovePeer(id int64) {
+	delete(w.peers, id)
 }
 func (w *Worker) Fence() {
 	<-w.kill

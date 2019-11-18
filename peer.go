@@ -4,54 +4,53 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"github.com/pkg/errors"
-	"github.com/zakimal/aap/log"
+	"github.com/zakimal/aap/payload"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
 )
 
-type ReceiveHandler struct {
-	hub chan Message
+type ReceiveHandle struct {
+	hub  chan Message
 	lock chan struct{}
 }
 
-func (r *ReceiveHandler) Unlock() {
-	<- r.lock
+func (r *ReceiveHandle) Unlock() {
+	<-r.lock
 }
 
-type SendHandler struct {
+type SendHandle struct {
 	payload []byte
-	result chan error
+	result  chan error
 }
 
 type Peer struct {
-	worker *Worker
-	conn net.Conn
-	sendQueue chan SendHandler
-	recvQueue sync.Map
-	kill chan *sync.WaitGroup
-	killOnce uint32
+	ID        int64
+	worker    *Worker
+	conn      net.Conn
+	sendQueue chan SendHandle
+	kill      chan *sync.WaitGroup
+	killOnce  uint32
 }
 
 func NewPeer(worker *Worker, conn net.Conn) *Peer {
 	return &Peer{
 		worker:    worker,
 		conn:      conn,
-		sendQueue: make(chan SendHandler, 128),
+		sendQueue: make(chan SendHandle, 128),
 		kill:      make(chan *sync.WaitGroup),
 		killOnce:  0,
 	}
 }
 func (p *Peer) init() {
-	go p.spawnMessageReceiver()
-	go p.spawnMessageSender()
+	go p.messageReceiver()
+	go p.messageSender()
 }
-func (p *Peer) spawnMessageSender() {
+func (p *Peer) messageSender() {
 	for {
-		var cmd SendHandler
+		var cmd SendHandle
 		select {
 		case wg := <-p.kill:
 			wg.Done()
@@ -75,7 +74,7 @@ func (p *Peer) spawnMessageSender() {
 		}
 		if err != nil {
 			if cmd.result != nil {
-				cmd.result <- errors.Wrap(err, "failed to send message to setupTestPeer")
+				cmd.result <- errors.Wrap(err, "failed to send messageReceiver to setupTestPeer")
 				close(cmd.result)
 			}
 			continue
@@ -86,7 +85,7 @@ func (p *Peer) spawnMessageSender() {
 		}
 	}
 }
-func (p *Peer) spawnMessageReceiver() {
+func (p *Peer) messageReceiver() {
 	reader := bufio.NewReader(p.conn)
 	for {
 		select {
@@ -111,12 +110,11 @@ func (p *Peer) spawnMessageReceiver() {
 			p.DisconnectAsync()
 			continue
 		}
-		c, _ := p.recvQueue.LoadOrStore(opcode, ReceiveHandler{hub: make(chan Message), lock: make(chan struct{}, 1)})
-		recv := c.(ReceiveHandler)
+		c, _ := p.worker.recvQueue.LoadOrStore(opcode, ReceiveHandle{hub: make(chan Message), lock: make(chan struct{}, 1)})
+		recv := c.(ReceiveHandle)
 		select {
 		case recv.hub <- msg:
 			recv.lock <- struct{}{}
-			log.Info().Msgf("Recv: %+v", recv.hub)
 			<-recv.lock
 		}
 	}
@@ -124,9 +122,9 @@ func (p *Peer) spawnMessageReceiver() {
 func (p *Peer) SendMessage(message Message) error {
 	encodedPayload, err := p.EncodeMessage(message)
 	if err != nil {
-		return errors.Wrap(err, "failed to serialize message contents to be sent to a setupTestPeer")
+		return errors.Wrap(err, "failed to serialize messageReceiver contents to be sent to a setupTestPeer")
 	}
-	cmd := SendHandler{payload: encodedPayload, result: make(chan error, 1)}
+	cmd := SendHandle{payload: encodedPayload, result: make(chan error, 1)}
 	select {
 	case p.sendQueue <- cmd:
 	}
@@ -139,18 +137,14 @@ func (p *Peer) SendMessageAsync(message Message) <-chan error {
 	result := make(chan error, 1)
 	encodedPayload, err := p.EncodeMessage(message)
 	if err != nil {
-		result <- errors.Wrap(err, "failed to serialize message contents to be sent to a setupTestPeer")
+		result <- errors.Wrap(err, "failed to serialize messageReceiver contents to be sent to a setupTestPeer")
 		return result
 	}
-	cmd := SendHandler{payload: encodedPayload, result: result}
+	cmd := SendHandle{payload: encodedPayload, result: result}
 	select {
 	case p.sendQueue <- cmd:
 	}
 	return result
-}
-func (p *Peer) Receive(op Opcode) <-chan Message {
-	c, _ := p.recvQueue.LoadOrStore(op, ReceiveHandler{hub: make(chan Message), lock: make(chan struct{}, 1)})
-	return c.(ReceiveHandler).hub
 }
 func (p *Peer) Disconnect() {
 	if !atomic.CompareAndSwapUint32(&p.killOnce, 0, 1) {
@@ -189,7 +183,7 @@ func (p *Peer) DisconnectAsync() <-chan struct{} {
 	return signal
 }
 func (p *Peer) LocalAddress() string {
-	return fmt.Sprintf("%s:%d", p.LocalIP(), p.LocalPort())
+	return p.conn.LocalAddr().String()
 }
 func (p *Peer) LocalIP() net.IP {
 	return p.worker.transport.IP(p.conn.LocalAddr())
@@ -198,7 +192,7 @@ func (p *Peer) LocalPort() uint16 {
 	return p.worker.transport.Port(p.conn.LocalAddr())
 }
 func (p *Peer) RemoteAddress() string {
-	return fmt.Sprintf("%s:%d", p.RemoteIP(), p.RemotePort())
+	return p.conn.RemoteAddr().String()
 }
 func (p *Peer) RemoteIP() net.IP {
 	return p.worker.transport.IP(p.conn.RemoteAddr())
@@ -209,44 +203,38 @@ func (p *Peer) RemotePort() uint16 {
 func (p *Peer) Worker() *Worker {
 	return p.worker
 }
-func (p *Peer) LockOnReceive(op Opcode) ReceiveHandler {
-	c, _ := p.recvQueue.LoadOrStore(op, ReceiveHandler{hub: make(chan Message), lock: make(chan struct{}, 1)})
-	recv := c.(ReceiveHandler)
-	recv.lock <- struct{}{}
-	return recv
-}
 func (p *Peer) SetWorker(worker *Worker) {
 	p.worker = worker
 }
 func (p *Peer) EncodeMessage(message Message) ([]byte, error) {
 	opcode, err := OpcodeFromMessage(message)
 	if err != nil {
-		return nil, errors.Wrap(err, "could not find opcode registered for message")
+		return nil, errors.Wrap(err, "could not find opcode registered for messageReceiver")
 	}
 	var buf bytes.Buffer
-	_, err = buf.Write(NewWriter(nil).WriteByte(byte(opcode)).Bytes())
+	_, err = buf.Write(payload.NewWriter(nil).WriteByte(byte(opcode)).Bytes())
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to serialize message opcode")
+		return nil, errors.Wrap(err, "failed to serialize messageReceiver opcode")
 	}
 	_, err = buf.Write(message.Write())
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to serialize and write message contents")
+		return nil, errors.Wrap(err, "failed to serialize and write messageReceiver contents")
 	}
 	return buf.Bytes(), nil
 }
 func (p *Peer) DecodeMessage(buf []byte) (Opcode, Message, error) {
-	reader := NewReader(buf)
+	reader := payload.NewReader(buf)
 	opcode, err := reader.ReadByte()
 	if err != nil {
 		return OpcodeNil, nil, errors.Wrap(err, "failed to read opcode")
 	}
 	message, err := MessageFromOpcode(Opcode(opcode))
 	if err != nil {
-		return Opcode(opcode), nil, errors.Wrap(err, "opcode <-> message pairing not registered")
+		return Opcode(opcode), nil, errors.Wrap(err, "opcode <-> messageReceiver pairing not registered")
 	}
 	message, err = message.Read(reader)
 	if err != nil {
-		return Opcode(opcode), nil, errors.Wrap(err, "failed to read message contents")
+		return Opcode(opcode), nil, errors.Wrap(err, "failed to read messageReceiver contents")
 	}
 	return Opcode(opcode), message, nil
 }

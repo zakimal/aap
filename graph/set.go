@@ -52,6 +52,11 @@ func (s Int64Set) Remove(ele int64) {
 func (s Int64Set) Count() int {
 	return len(s)
 }
+func (s Int64Set) Clear() {
+	for k := range s {
+		delete(s, k)
+	}
+}
 func Int64sEqual(a, b Int64Set) bool {
 	if isSameInt64s(a, b) {
 		return true
@@ -67,6 +72,44 @@ func Int64sEqual(a, b Int64Set) bool {
 	return true
 }
 func isSameInt64s(a, b Int64Set) bool {
+	return *(*uintptr)(unsafe.Pointer(&a)) == *(*uintptr)(unsafe.Pointer(&b))
+}
+
+type Uint64Set map[uint64]struct{}
+
+func (s Uint64Set) Add(ele uint64) {
+	s[ele] = struct{}{}
+}
+func (s Uint64Set) Has(ele uint64) bool {
+	_, ok := s[ele]
+	return ok
+}
+func (s Uint64Set) Remove(ele uint64) {
+	delete(s, ele)
+}
+func (s Uint64Set) Count() int {
+	return len(s)
+}
+func (s Uint64Set) Clear() {
+	for k := range s {
+		delete(s, k)
+	}
+}
+func Uint64sEqual(a, b Uint64Set) bool {
+	if isSameUint64s(a, b) {
+		return true
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for ele := range a {
+		if _, ok := b[ele]; !ok {
+			return false
+		}
+	}
+	return true
+}
+func isSameUint64s(a, b Uint64Set) bool {
 	return *(*uintptr)(unsafe.Pointer(&a)) == *(*uintptr)(unsafe.Pointer(&b))
 }
 

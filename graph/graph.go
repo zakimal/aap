@@ -10,21 +10,16 @@ import (
 )
 
 type Node struct {
-	id      int64
-	ownerID int64
+	id int64
 }
 
-func NewNode(id int64, ownerID int64) Node {
+func NewNode(id int64) Node {
 	return Node{
-		id:      id,
-		ownerID: ownerID,
+		id: id,
 	}
 }
 func (n Node) ID() int64 {
 	return n.id
-}
-func (n Node) OwnerID() int64 {
-	return n.ownerID
 }
 
 type WeightedEdge struct {
@@ -61,16 +56,16 @@ func NewWeightedDirectedGraph(self, absent float64) *WeightedDirectedGraph {
 		nodeIDs: NewUIDPool(),
 	}
 }
-func NewWeightedDirectedGraphFromCSV(workerId int64, self, absent float64) *WeightedDirectedGraph {
+func NewWeightedDirectedGraphFromCSV(address string, self, absent float64) (*WeightedDirectedGraph, map[int64]Uint64Set) {
 	g := NewWeightedDirectedGraph(self, absent)
 
-	nodes, err := os.Open("data/nodes/" + fmt.Sprintf("%d", workerId) + ".txt")
+	nodes, err := os.Open("data/nodes/" + address + ".txt")
 	if err != nil {
 		panic(err)
 	}
 	defer nodes.Close()
 
-	node2owner := make(map[int64]int64)
+	possessionTable := make(map[int64]Uint64Set)
 
 	reader := csv.NewReader(nodes)
 	reader.Read() // skip header
@@ -82,13 +77,13 @@ func NewWeightedDirectedGraphFromCSV(workerId int64, self, absent float64) *Weig
 			panic(err)
 		}
 
-		nodeId, _ := strconv.ParseInt(record[0], 10, 64)
-		ownerId, _ := strconv.ParseInt(record[0], 10, 64)
+		nodeID, _ := strconv.ParseInt(record[0], 10, 64)
+		workerID, _ := strconv.ParseUint(record[1], 10, 64)
 
-		node2owner[nodeId] = ownerId
+		possessionTable[nodeID].Add(workerID)
 	}
 
-	edges, err := os.Open("data/edges/" + fmt.Sprintf("%d", workerId) + ".txt")
+	edges, err := os.Open("data/edges/" + address + ".txt")
 	if err != nil {
 		panic(err)
 	}
@@ -109,14 +104,14 @@ func NewWeightedDirectedGraphFromCSV(workerId int64, self, absent float64) *Weig
 		weight, _ := strconv.ParseFloat(record[2], 64)
 
 		weightedEdge := WeightedEdge{
-			F: NewNode(fid, node2owner[fid]),
-			T: NewNode(tid, node2owner[tid]),
+			F: NewNode(fid),
+			T: NewNode(tid),
 			W: weight,
 		}
 
 		g.SetWeightedEdge(weightedEdge)
 	}
-	return g
+	return g, possessionTable
 }
 func (g *WeightedDirectedGraph) Node(id int64) Node {
 	return g.nodes[id]
@@ -140,7 +135,7 @@ func (g *WeightedDirectedGraph) From(id int64) []Node {
 	from := make([]Node, len(g.from[id]))
 	i := 0
 	for nid := range g.from[id] {
-		from[nid] = g.nodes[nid]
+		from[i] = g.nodes[nid]
 		i++
 	}
 	if len(from) == 0 {
@@ -352,8 +347,17 @@ func (s ShortestPath) To(vid int64) (path []Node, weight float64) {
 func (s ShortestPath) Nodes() []Node {
 	return s.nodes
 }
+func (s ShortestPath) Dist() []float64 {
+	return s.dist
+}
 func (s ShortestPath) DistOf(id int64) float64 {
 	return s.dist[s.index[id]]
+}
+func (s ShortestPath) Index() map[int64]int {
+	return s.index
+}
+func (s ShortestPath) InvIndex() map[int]int64 {
+	return s.invIndex
 }
 func (s ShortestPath) Add(u Node) int {
 	uid := u.ID()
@@ -379,6 +383,9 @@ func (s ShortestPath) ChangedNodeID() []int64 {
 		ns[i] = k
 	}
 	return ns
+}
+func (s ShortestPath) ClearChanged() {
+	s.changed.Clear()
 }
 
 func isSame(a, b float64) bool {

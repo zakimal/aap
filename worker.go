@@ -101,6 +101,12 @@ func (w *Worker) Host() string {
 func (w *Worker) Port() uint16 {
 	return w.port
 }
+func (w *Worker) Peers() map[uint64]*Peer {
+	return w.peers
+}
+func (w *Worker) Peer(id uint64) *Peer {
+	return w.peers[id]
+}
 
 func (w *Worker) Listen() {
 	for {

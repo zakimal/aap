@@ -10,6 +10,5 @@ type Message interface {
 }
 
 type MessageNil struct{}
-
 func (MessageNil) Read(reader payload.Reader) (Message, error) { return MessageNil{}, nil }
 func (MessageNil) Write() []byte                               { return nil }

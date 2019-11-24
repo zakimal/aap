@@ -73,6 +73,16 @@ func NewWorker(id uint64, host string, port uint16) (*Worker, error) {
 
 func (w *Worker) init() {
 	go w.messageSender()
+
+	go func() {
+		for {
+			select {
+			case w.Receive(opcodePEval):
+			case w.Receive(opcodeIncEval):
+
+			}
+		}
+	}()
 }
 
 func (w *Worker) messageSender() {

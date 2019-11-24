@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"github.com/pkg/errors"
 	"github.com/zakimal/aap/graph"
-	"github.com/zakimal/aap/log"
 	"github.com/zakimal/aap/payload"
 	"github.com/zakimal/aap/transport"
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 )
 
 type sendHandle struct {

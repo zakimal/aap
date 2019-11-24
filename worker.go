@@ -121,8 +121,44 @@ func (w *Worker) Listen() {
 			continue
 		}
 		peer := NewPeer(w, conn)
+
+		// FIXME!
+		switch conn.RemoteAddr().String() {
+		case "127.0.0.1:3000":
+			peer.ID = 0
+		case "127.0.0.1:3001":
+			peer.ID = 1
+		case "127.0.0.1:3002":
+			peer.ID = 2
+		}
+
+		w.SetPeer(peer)
+
 		peer.Init()
 	}
+}
+func (w *Worker) Dial(address string) (*Peer, error) {
+	conn, err := w.transport.Dial(address)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to connect to peer %s", conn)
+	}
+	peer := NewPeer(w, conn)
+
+	// FIXME!
+	switch address {
+	case "127.0.0.1:3000":
+		peer.ID = 0
+	case "127.0.0.1:3001":
+		peer.ID = 1
+	case "127.0.0.1:3002":
+		peer.ID = 2
+	}
+
+	w.SetPeer(peer)
+
+	peer.Init()
+
+	return peer, nil
 }
 
 func (w *Worker) WeightedDirectedGraph() *graph.WeightedDirectedGraph {
@@ -166,6 +202,9 @@ func (w *Worker) EncodeMessage(message Message) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+func (w *Worker) SetPeer(peer *Peer) {
+	w.peers[peer.ID] = peer
+}
 func (w *Worker) SendMessage(peer *Peer, message Message) error {
 	payload, err := w.EncodeMessage(message)
 	if err != nil {

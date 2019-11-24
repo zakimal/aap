@@ -25,20 +25,21 @@ type receiveHandle struct {
 }
 
 type Worker struct {
-	id uint64
-	transport transport.Transport
-	listener net.Listener
-	host string
-	port uint16
-	peers map[uint64]*Peer
-	sendQueue chan sendHandle
-	recvQueue sync.Map
-	round uint64
+	id                    uint64
+	transport             transport.Transport
+	listener              net.Listener
+	host                  string
+	port                  uint16
+	peers                 map[uint64]*Peer
+	sendQueue             chan sendHandle
+	recvQueue             sync.Map
+	round                 uint64
 	weightedDirectedGraph *graph.WeightedDirectedGraph
-	shortestPath *graph.ShortestPath
-	possessionTable map[int64]graph.Uint64Set // node ID => worker ID
-	kill chan chan struct{}
-	killOnce uint32
+	shortestPath          *graph.ShortestPath
+	possessionTable       map[int64]graph.Uint64Set // node ID => worker ID
+	isInactive            bool
+	kill                  chan chan struct{}
+	killOnce              uint32
 }
 
 func NewWorker(id uint64, host string, port uint16) (*Worker, error) {
@@ -62,6 +63,7 @@ func NewWorker(id uint64, host string, port uint16) (*Worker, error) {
 		weightedDirectedGraph: weightedDirectedGraph,
 		shortestPath:          shortestPath,
 		possessionTable:       possessionTable,
+		isInactive:            false,
 		kill:                  make(chan chan struct{}, 1),
 		killOnce:              0,
 	}
@@ -234,4 +236,7 @@ func (w *Worker) Round() uint64 {
 }
 func (w *Worker) PossessionTable() map[int64]graph.Uint64Set {
 	return w.possessionTable
+}
+func (w *Worker) IsInactive() bool {
+	return w.isInactive
 }

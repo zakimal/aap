@@ -30,7 +30,6 @@ func (m MessageHello) Write() []byte {
 	return payload.NewWriter(nil).WriteUint64(m.from).Bytes()
 }
 
-// TODO: IMPLEMENT Message interface!!!
 type MessagePEvalRequest struct{
 	from uint64
 }
@@ -47,18 +46,23 @@ func (m MessagePEvalRequest) Write() []byte {
 }
 
 type MessagePEvalResponse struct{
+	from uint64
 	debugText string
 }
 
 func (MessagePEvalResponse) Read(reader payload.Reader) (Message, error) {
+	from, err := reader.ReadUint64()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read `from` of `MessagePEvalResponse`")
+	}
 	debugText, err := reader.ReadString()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read `debugText` of `MessagePEvalResponse`")
 	}
-	return MessagePEvalResponse{debugText:debugText}, nil
+	return MessagePEvalResponse{from: from, debugText:debugText}, nil
 }
 func (m MessagePEvalResponse) Write() []byte {
-	return payload.NewWriter(nil).WriteString(m.debugText).Bytes()
+	return payload.NewWriter(nil).WriteUint64(m.from).WriteString(m.debugText).Bytes()
 }
 
 type MessageIncEvalUpdate struct{
@@ -117,18 +121,23 @@ func (m MessageNotifyInactive) Write() []byte {
 }
 
 type MessageTerminate struct{
+	from uint64
 	debugText string
 }
 
 func (MessageTerminate) Read(reader payload.Reader) (Message, error) {
+	from, err := reader.ReadUint64()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read `from` of `MessageTerminate`")
+	}
 	debugText, err := reader.ReadString()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read `debugText` of `MessageTerminate`")
 	}
-	return MessageTerminate{debugText:debugText}, nil
+	return MessageTerminate{from: from, debugText:debugText}, nil
 }
 func (m MessageTerminate) Write() []byte {
-	return payload.NewWriter(nil).WriteString(m.debugText).Bytes()
+	return payload.NewWriter(nil).WriteUint64(m.from).WriteString(m.debugText).Bytes()
 }
 
 type MessageTerminateACK struct{
@@ -147,18 +156,23 @@ func (m MessageTerminateACK) Write() []byte {
 }
 
 type MessageAssembleRequest struct{
+	from uint64
 	debugText string
 }
 
 func (MessageAssembleRequest) Read(reader payload.Reader) (Message, error) {
+	from, err := reader.ReadUint64()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read `from` of `MessageAssembleRequest`")
+	}
 	debugText, err := reader.ReadString()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read `debugText` of `MessageAssembleRequest`")
 	}
-	return MessageAssembleRequest{debugText:debugText}, nil
+	return MessageAssembleRequest{from: from, debugText:debugText}, nil
 }
 func (m MessageAssembleRequest) Write() []byte {
-	return payload.NewWriter(nil).WriteString(m.debugText).Bytes()
+	return payload.NewWriter(nil).WriteUint64(m.from).WriteString(m.debugText).Bytes()
 }
 
 type MessageAssembleResponse struct{

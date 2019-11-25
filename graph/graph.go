@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"container/heap"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -379,7 +380,7 @@ func (s ShortestPath) Set(to int, weight float64, mid int) {
 	s.next[to] = mid
 	s.changed[s.invIndex[to]] = struct{}{}
 }
-func (s ShortestPath) ChangedNodeID() []int64 {
+func (s ShortestPath) ChangedNodeIDs() []int64 {
 	ns := make([]int64, len(s.changed))
 	i := 0
 	for k := range s.changed {
@@ -390,7 +391,106 @@ func (s ShortestPath) ChangedNodeID() []int64 {
 func (s ShortestPath) ClearChanged() {
 	s.changed.Clear()
 }
+func (s ShortestPath) Result() map[int64]float64 {
+	result := make(map[int64]float64)
+	for nid, idx := range s.index {
+		result[nid] = s.dist[idx]
+	}
+	return result
+}
+
+func PEvalDijkstra(graph *WeightedDirectedGraph, path *ShortestPath) {
+	Q := priorityQueue{NewDistanceNode(0, 0)}
+	for Q.Len() != 0 {
+		mid := heap.Pop(&Q).(DistanceNode)
+		k := path.index[mid.node.ID()]
+		if mid.dist > path.dist[k] {
+			continue
+		}
+		mnid := mid.node.ID()
+		for _, n := range graph.From(mnid) {
+			vid := n.ID()
+			j, ok := path.index[vid]
+			if !ok {
+				j = path.Add(n)
+			}
+			w, ok := graph.Weight(mnid, vid)
+			if !ok {
+				panic("dijkstra: unexpected invalid weight")
+			}
+			if w < 0 {
+				panic("dijkstra: negative edge weight")
+			}
+			joint := path.dist[k] + w
+			if joint < path.dist[j] {
+				heap.Push(&Q, DistanceNode{node: n, dist: joint})
+				path.Set(j, joint, k)
+			}
+		}
+	}
+}
+
+func IncEvalDijkstra(updates []DistanceNode, graph *WeightedDirectedGraph, path *ShortestPath) {
+	Q := priorityQueue{}
+	for _, u := range updates {
+		heap.Push(&Q, u)
+	}
+	for Q.Len() != 0 {
+		mid := heap.Pop(&Q).(DistanceNode)
+		k := path.index[mid.node.ID()]
+		if mid.dist > path.dist[k] {
+			continue
+		}
+		mnid := mid.node.ID()
+		for _, n := range graph.From(mnid) {
+			vid := n.ID()
+			j, ok := path.index[vid]
+			if !ok {
+				j = path.Add(n)
+			}
+			w, ok := graph.Weight(mnid, vid)
+			if !ok {
+				panic("dijkstra: unexpected invalid weight")
+			}
+			if w < 0 {
+				panic("dijkstra: negative edge weight")
+			}
+			joint := path.dist[k] + w
+			if joint < path.dist[j] {
+				heap.Push(&Q, DistanceNode{node: n, dist: joint})
+				path.Set(j, joint, k)
+			}
+		}
+	}
+}
 
 func isSame(a, b float64) bool {
 	return a == b || (math.IsNaN(a) && math.IsNaN(b))
+}
+
+type DistanceNode struct {
+	node Node
+	dist float64
+}
+
+func NewDistanceNode(nid int64, dist float64) DistanceNode {
+	return DistanceNode{
+		node: NewNode(nid),
+		dist: dist,
+	}
+}
+
+type priorityQueue []DistanceNode
+
+func (pq priorityQueue) Len() int { return len(pq) }
+func (pq priorityQueue) Less(i, j int) bool { return pq[i].dist < pq[j].dist }
+func (pq priorityQueue) Swap(i, j int) { pq[i], pq[j] = pq[j], pq[i] }
+func (pq *priorityQueue) Push(n interface{}) {
+	*pq = append(*pq, n.(DistanceNode))
+}
+func (pq *priorityQueue) Pop() interface{} {
+	t := *pq
+	var n interface{}
+	n, *pq = t[len(t)-1], t[:len(t)-1]
+	return n
 }

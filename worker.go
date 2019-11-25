@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/pkg/errors"
 	"github.com/zakimal/aap/graph"
+	"github.com/zakimal/aap/log"
 	"github.com/zakimal/aap/payload"
 	"github.com/zakimal/aap/transport"
 	"io"
@@ -40,6 +41,7 @@ type Worker struct {
 	possessionTable       map[int64]graph.Uint64Set // node ID => worker ID
 	master                *Peer
 	isInactive            bool
+	inactiveMap map[uint64]bool
 	kill                  chan chan struct{}
 	killOnce              uint32
 }
@@ -67,6 +69,7 @@ func NewWorker(id uint64, host string, port uint16) (*Worker, error) {
 		shortestPath:          shortestPath,
 		possessionTable:       possessionTable,
 		isInactive:            false,
+		inactiveMap: make(map[uint64]bool),
 		kill:                  make(chan chan struct{}, 1),
 		killOnce:              0,
 	}
@@ -104,9 +107,78 @@ func (w *Worker) init() {
 	go func() {
 		for {
 			select {
-			case w.Receive(opcodePEval):
-			case w.Receive(opcodeIncEval):
+			case msg := <- w.Receive(opcodePEvalRequest):
+				log.Info().Msgf("received PEval request from peer %d", msg.(MessagePEvalRequest).from)
+				master := w.peers[msg.(MessagePEvalRequest).from]
+				w.master = master
+				log.Info().Msgf("set peer %d as master", master.id)
+				if err := w.SendMessage(master, MessagePEvalResponse{debugText: fmt.Sprintf("OK from %d", w.id)}) ;err != nil {
+					panic(err)
+				}
+				// PEvalでdistが更新された頂点集合はChangedNodeIDs()で取れる
+				// 更新された頂点が自分以外のworker所有かつ自分の所有している頂点を始点とする辺の終点であるならば送信する
+				// TODO: グラフを読み込んだ時点で，F.I/F.O/F.I'/F.O'を計算しておくべき
+				graph.PEvalDijkstra(w.weightedDirectedGraph, w.shortestPath)
+				for _, nid := range w.shortestPath.ChangedNodeIDs() {
+					owners := w.possessionTable[nid]
+					for owner := range owners {
 
+					}
+				}
+				// TODO: IMPLEMENT PEval & send messages...
+			case msg := <- w.Receive(opcodePEvalResponse):
+				log.Info().Msgf("received PEval response from peer %d", msg.(MessagePEvalResponse).from)
+			case msg := <- w.Receive(opcodeIncEvalUpdate):
+				log.Info().Msgf("received PEval request from peer %d: <from=%d, round=%d, nid=%d, data=%f>",
+					msg.(MessageIncEvalUpdate).from,
+					msg.(MessageIncEvalUpdate).from,
+					msg.(MessageIncEvalUpdate).round,
+					msg.(MessageIncEvalUpdate).nid,
+					msg.(MessageIncEvalUpdate).data)
+
+				// TODO: IMPLEMENT IncEval & send messages and incremental updatesが0の時にnotifyinactivをmasterに送信
+				// TODO: Incremntal updateを実行するたびにisinactiveをfalseにする
+			case msg := <- w.Receive(opcodeNotifyInactive):
+				log.Info().Msgf("received inactive notification from peer %d", msg.(MessageNotifyInactive).from)
+				flag := true
+				for _, status := range w.inactiveMap {
+					flag = flag && status
+				}
+				if flag {
+					for _, p := range w.peers {
+						if err := w.SendMessage(p, MessageTerminate{
+							from:      w.id,
+							debugText: "Terminate",
+						}); err != nil {
+							panic(err)
+						}
+					}
+				}
+			case msg := <- w.Receive(opcodeTerminate):
+				log.Info().Msgf("received terminate message from peer %d", msg.(MessageTerminate).from)
+				if w.isInactive {
+					if err := w.SendMessage(w.master, MessageTerminateACK{from:w.id}); err != nil {
+						panic(err)
+					}
+				}
+			case msg := <- w.Receive(opcodeTerminateACK):
+				log.Info().Msgf("received terminate message from peer %d", msg.(MessageTerminateACK).from)
+				for _, p := range w.peers {
+					if err := w.SendMessage(p, MessageAssembleRequest{
+						from:      w.id,
+						debugText: "ASSEMBLE",
+					}); err != nil {
+						panic(err)
+					}
+				}
+			case msg := <- w.Receive(opcodeAssembleRequest):
+				log.Info().Msgf("received Assemble request from peer %d", msg.(MessageAssembleRequest).from)
+				if err := w.SendMessage(w.master, MessageAssembleResponse{from:w.id, result:w.shortestPath.Result()}); err != nil {
+					panic(err)
+				}
+			case msg := <- w.Receive(opcodeAssembleResponse):
+				log.Info().Msgf("received Assemble response from peer %d, result: %+v",
+					msg.(MessageAssembleResponse).from, msg.(MessageAssembleResponse).result)
 			}
 		}
 	}()
@@ -231,6 +303,7 @@ func (w *Worker) Listen() {
 		case msg := <-w.Receive(opcodeHello):
 			peerID := msg.(MessageHello).from
 			w.peers[peerID] = peer
+			w.inactiveMap[peerID] = false
 		}
 	}
 }
@@ -249,6 +322,7 @@ func (w *Worker) Dial(address string) (*Peer, error) {
 	case msg := <-w.Receive(opcodeHello):
 		peerID := msg.(MessageHello).from
 		w.peers[peerID] = peer
+		w.inactiveMap[peerID] = false
 	}
 	return peer, nil
 }

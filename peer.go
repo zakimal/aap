@@ -14,10 +14,10 @@ import (
 )
 
 type Peer struct {
-	id uint64
-	worker *Worker
-	conn net.Conn
-	kill chan *sync.WaitGroup
+	id       uint64
+	worker   *Worker
+	conn     net.Conn
+	kill     chan *sync.WaitGroup
 	killOnce uint32
 }
 
@@ -39,7 +39,7 @@ func (p *Peer) messageReceiver() {
 	reader := bufio.NewReader(p.conn)
 	for {
 		select {
-		case wg := <- p.kill:
+		case wg := <-p.kill:
 			wg.Done()
 			return
 		default:
@@ -68,10 +68,10 @@ func (p *Peer) messageReceiver() {
 		select {
 		case recvQueue.hub <- msg:
 			recvQueue.lock <- struct{}{}
-			<- recvQueue.lock
-			case <- time.After(3 * time.Second):
-				p.DisconnectAsync()
-				continue
+			<-recvQueue.lock
+		case <-time.After(3 * time.Second):
+			p.DisconnectAsync()
+			continue
 		}
 	}
 }
@@ -107,7 +107,7 @@ func (p *Peer) Disconnect() {
 	wg.Wait()
 	close(p.kill)
 }
-func (p *Peer) DisconnectAsync() <- chan struct{} {
+func (p *Peer) DisconnectAsync() <-chan struct{} {
 	signal := make(chan struct{})
 	if !atomic.CompareAndSwapUint32(&p.killOnce, 0, 1) {
 		close(signal)

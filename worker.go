@@ -9,18 +9,19 @@ import (
 	"github.com/zakimal/aap/payload"
 	"github.com/zakimal/aap/transport"
 	"io"
+	"math"
 	"net"
 	"sync"
 )
 
 type sendHandle struct {
-	to *Peer
+	to      *Peer
 	payload []byte
-	result chan error
+	result  chan error
 }
 
 type receiveHandle struct {
-	hub chan Message
+	hub  chan Message
 	lock chan struct{}
 }
 
@@ -37,6 +38,7 @@ type Worker struct {
 	weightedDirectedGraph *graph.WeightedDirectedGraph
 	shortestPath          *graph.ShortestPath
 	possessionTable       map[int64]graph.Uint64Set // node ID => worker ID
+	master                *Peer
 	isInactive            bool
 	kill                  chan chan struct{}
 	killOnce              uint32
@@ -48,8 +50,9 @@ func NewWorker(id uint64, host string, port uint16) (*Worker, error) {
 	if err != nil {
 		return nil, errors.Errorf("failed to create listener for peers on port %d", port)
 	}
-	weightedDirectedGraph, possessionTable := graph.NewWeightedDirectedGraphFromCSV()
-	shortestPath := graph.NewShortestFrom()
+	address := fmt.Sprintf("%s:%d", host, port)
+	weightedDirectedGraph, possessionTable := graph.NewWeightedDirectedGraphFromCSV(address, 0.0, math.Inf(1))
+	shortestPath := graph.NewShortestFrom(weightedDirectedGraph.Node(0), weightedDirectedGraph.Nodes())
 	worker := Worker{
 		id:                    id,
 		transport:             tcp,
@@ -71,7 +74,31 @@ func NewWorker(id uint64, host string, port uint16) (*Worker, error) {
 	return &worker, nil
 }
 
+// opcodes
+var (
+	opcodeHello            Opcode
+	opcodePEvalRequest     Opcode
+	opcodePEvalResponse    Opcode
+	opcodeIncEvalUpdate    Opcode
+	opcodeNotifyInactive   Opcode
+	opcodeTerminate        Opcode
+	opcodeTerminateACK     Opcode
+	opcodeAssembleRequest  Opcode
+	opcodeAssembleResponse Opcode
+	// TODO: opcode
+)
+
+// register messages and spawn message sender
 func (w *Worker) init() {
+	opcodeHello = RegisterMessage(NextAvailableOpcode(), (*MessageHello)(nil))
+	opcodePEvalRequest = RegisterMessage(NextAvailableOpcode(), (*MessagePEvalRequest)(nil))
+	opcodePEvalResponse = RegisterMessage(NextAvailableOpcode(), (*MessagePEvalResponse)(nil))
+	opcodeIncEvalUpdate = RegisterMessage(NextAvailableOpcode(), (*MessageIncEvalUpdate)(nil))
+	opcodeNotifyInactive = RegisterMessage(NextAvailableOpcode(), (*MessageNotifyInactive)(nil))
+	opcodeTerminate = RegisterMessage(NextAvailableOpcode(), (*MessageTerminate)(nil))
+	opcodeTerminateACK = RegisterMessage(NextAvailableOpcode(), (*MessageTerminateACK)(nil))
+	opcodeAssembleRequest = RegisterMessage(NextAvailableOpcode(), (*MessageAssembleRequest)(nil))
+	opcodeAssembleResponse = RegisterMessage(NextAvailableOpcode(), (*MessageAssembleResponse)(nil))
 	go w.messageSender()
 
 	go func() {
@@ -89,7 +116,7 @@ func (w *Worker) messageSender() {
 	for {
 		var cmd sendHandle
 		select {
-		case cmd = <- w.sendQueue:
+		case cmd = <-w.sendQueue:
 		}
 		to := cmd.to
 		payload := cmd.payload
@@ -135,11 +162,11 @@ func (w *Worker) SendMessage(to *Peer, message Message) error {
 	case w.sendQueue <- cmd:
 	}
 	select {
-	case err = <- cmd.result:
+	case err = <-cmd.result:
 		return err
 	}
 }
-func (w *Worker) SendMessageAsync(to *Peer, message Message) <- chan error {
+func (w *Worker) SendMessageAsync(to *Peer, message Message) <-chan error {
 	result := make(chan error, 1)
 	payload, err := w.encodeMessage(message)
 	if err != nil {
@@ -173,7 +200,7 @@ func (w *Worker) encodeMessage(message Message) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (w *Worker) Receive(opcode Opcode) <- chan Message {
+func (w *Worker) Receive(opcode Opcode) <-chan Message {
 	c, _ := w.recvQueue.LoadOrStore(opcode, receiveHandle{
 		hub:  make(chan Message),
 		lock: make(chan struct{}, 1),
@@ -181,10 +208,11 @@ func (w *Worker) Receive(opcode Opcode) <- chan Message {
 	return c.(receiveHandle).hub
 }
 
+// TODO: ID交換
 func (w *Worker) Listen() {
 	for {
 		select {
-		case signal := <- w.kill:
+		case signal := <-w.kill:
 			close(signal)
 			return
 		default:
@@ -196,6 +224,14 @@ func (w *Worker) Listen() {
 		peer := NewPeer(w, conn)
 		peer.init() // go peer.messageReceiver()
 		// TODO: ここにいろいろ書けばpeerごとに実行される
+		if err := w.SendMessage(peer, MessageHello{from: w.id}); err != nil {
+			panic(err)
+		}
+		select {
+		case msg := <-w.Receive(opcodeHello):
+			peerID := msg.(MessageHello).from
+			w.peers[peerID] = peer
+		}
 	}
 }
 func (w *Worker) Dial(address string) (*Peer, error) {
@@ -206,6 +242,14 @@ func (w *Worker) Dial(address string) (*Peer, error) {
 	peer := NewPeer(w, conn)
 	peer.init() // go peer.messageReceiver()
 	// TODO: ここにいろいろ書けばpeerごとに実行される
+	if err := w.SendMessage(peer, MessageHello{from: w.id}); err != nil {
+		panic(err)
+	}
+	select {
+	case msg := <-w.Receive(opcodeHello):
+		peerID := msg.(MessageHello).from
+		w.peers[peerID] = peer
+	}
 	return peer, nil
 }
 
@@ -214,7 +258,7 @@ func (w *Worker) Disconnect(peer *Peer) {
 	delete(w.peers, id)
 	peer.Disconnect()
 }
-func (w *Worker) DisconnectAsync(peer *Peer) <- chan struct{} {
+func (w *Worker) DisconnectAsync(peer *Peer) <-chan struct{} {
 	id := peer.id
 	delete(w.peers, id)
 	return peer.DisconnectAsync()

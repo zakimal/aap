@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Node struct {
@@ -59,7 +60,7 @@ func NewWeightedDirectedGraph(self, absent float64) *WeightedDirectedGraph {
 func NewWeightedDirectedGraphFromCSV(address string, self, absent float64) (*WeightedDirectedGraph, map[int64]Uint64Set) {
 	g := NewWeightedDirectedGraph(self, absent)
 
-	nodes, err := os.Open("data/nodes/" + address + ".txt")
+	nodes, err := os.Open("data/nodes/nodes.txt")
 	if err != nil {
 		panic(err)
 	}
@@ -78,9 +79,11 @@ func NewWeightedDirectedGraphFromCSV(address string, self, absent float64) (*Wei
 		}
 
 		nodeID, _ := strconv.ParseInt(record[0], 10, 64)
-		workerID, _ := strconv.ParseUint(record[1], 10, 64)
-
-		possessionTable[nodeID].Add(workerID)
+		workerIDs := strings.Split(record[1], ":")
+		for _, _id := range workerIDs {
+			id, _ := strconv.ParseInt(_id, 10, 64)
+			possessionTable[nodeID].Add(uint64(id))
+		}
 	}
 
 	edges, err := os.Open("data/edges/" + address + ".txt")

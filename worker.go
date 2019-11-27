@@ -13,6 +13,7 @@ import (
 	"math"
 	"net"
 	"sync"
+	"sync/atomic"
 )
 
 type sendHandle struct {
@@ -41,40 +42,75 @@ type Worker struct {
 	possessionTable       map[int64]graph.Uint64Set // node ID => worker ID
 	master                *Peer
 	isInactive            bool
-	inactiveMap map[uint64]bool
+	inactiveMap           map[uint64]bool
+	terminateMap          map[uint64]bool
 	kill                  chan chan struct{}
 	killOnce              uint32
 }
 
-func NewWorker(id uint64, host string, port uint16) (*Worker, error) {
+func NewWorker(id uint64, host string, port uint16, master bool) (*Worker, error) {
 	tcp := transport.NewTCP()
 	listener, err := tcp.Listen(host, port)
 	if err != nil {
 		return nil, errors.Errorf("failed to create listener for peers on port %d", port)
 	}
-	address := fmt.Sprintf("%s:%d", host, port)
-	weightedDirectedGraph, possessionTable := graph.NewWeightedDirectedGraphFromCSV(address, 0.0, math.Inf(1))
-	shortestPath := graph.NewShortestFrom(weightedDirectedGraph.Node(0), weightedDirectedGraph.Nodes())
-	worker := Worker{
-		id:                    id,
-		transport:             tcp,
-		listener:              listener,
-		host:                  host,
-		port:                  port,
-		peers:                 make(map[uint64]*Peer),
-		sendQueue:             make(chan sendHandle, 128),
-		recvQueue:             nil,
-		round:                 0,
-		weightedDirectedGraph: weightedDirectedGraph,
-		shortestPath:          shortestPath,
-		possessionTable:       possessionTable,
-		isInactive:            false,
-		inactiveMap: make(map[uint64]bool),
-		kill:                  make(chan chan struct{}, 1),
-		killOnce:              0,
+	var (
+		weightedDirectedGraph *graph.WeightedDirectedGraph
+		possessionTable       map[int64]graph.Uint64Set
+		shortestPath          *graph.ShortestPath
+	)
+	if master {
+		worker := Worker{
+			id:                    id,
+			transport:             tcp,
+			listener:              listener,
+			host:                  host,
+			port:                  port,
+			peers:                 make(map[uint64]*Peer),
+			sendQueue:             make(chan sendHandle, 128),
+			recvQueue:             sync.Map{},
+			round:                 0,
+			weightedDirectedGraph: weightedDirectedGraph,
+			shortestPath:          shortestPath,
+			possessionTable:       possessionTable,
+			isInactive:            false,
+			inactiveMap:           make(map[uint64]bool),
+			terminateMap:          make(map[uint64]bool),
+			kill:                  make(chan chan struct{}, 1),
+			killOnce:              0,
+		}
+		worker.init() // go worker.messageSender()
+		return &worker, nil
+	} else {
+		address := fmt.Sprintf("%s:%d", host, port)
+		weightedDirectedGraph, possessionTable = graph.NewWeightedDirectedGraphFromCSV(address, 0.0, math.Inf(1))
+		log.Info().Msgf("nodes: %+v", weightedDirectedGraph.Nodes())
+		shortestPath = graph.NewShortestFrom(graph.NewNode(0), weightedDirectedGraph.Nodes())
+		if id == 0 {
+			shortestPath.SetZero()
+		}
+		worker := Worker{
+			id:                    id,
+			transport:             tcp,
+			listener:              listener,
+			host:                  host,
+			port:                  port,
+			peers:                 make(map[uint64]*Peer),
+			sendQueue:             make(chan sendHandle, 128),
+			recvQueue:             sync.Map{},
+			round:                 0,
+			weightedDirectedGraph: weightedDirectedGraph,
+			shortestPath:          shortestPath,
+			possessionTable:       possessionTable,
+			isInactive:            false,
+			inactiveMap:           make(map[uint64]bool),
+			terminateMap:          make(map[uint64]bool),
+			kill:                  make(chan chan struct{}, 1),
+			killOnce:              0,
+		}
+		worker.init() // go worker.messageSender()
+		return &worker, nil
 	}
-	worker.init() // go worker.messageSender()
-	return &worker, nil
 }
 
 // opcodes
@@ -88,7 +124,6 @@ var (
 	opcodeTerminateACK     Opcode
 	opcodeAssembleRequest  Opcode
 	opcodeAssembleResponse Opcode
-	// TODO: opcode
 )
 
 // register messages and spawn message sender
@@ -104,42 +139,115 @@ func (w *Worker) init() {
 	opcodeAssembleResponse = RegisterMessage(NextAvailableOpcode(), (*MessageAssembleResponse)(nil))
 	go w.messageSender()
 
+	// TODO: ここで全typeのメッセージを待つのがダメっぽい
 	go func() {
 		for {
 			select {
-			case msg := <- w.Receive(opcodePEvalRequest):
-				log.Info().Msgf("received PEval request from peer %d", msg.(MessagePEvalRequest).from)
-				master := w.peers[msg.(MessagePEvalRequest).from]
+			case msg := <-w.Receive(opcodePEvalRequest):
+				atomic.AddUint64(&w.round, 1)
+				log.Info().Msgf("received PEval request From peer %d", msg.(MessagePEvalRequest).From)
+				master := w.peers[msg.(MessagePEvalRequest).From]
 				w.master = master
 				log.Info().Msgf("set peer %d as master", master.id)
-				if err := w.SendMessage(master, MessagePEvalResponse{debugText: fmt.Sprintf("OK from %d", w.id)}) ;err != nil {
+				if err := w.SendMessage(master, MessagePEvalResponse{from: w.id, debugText: "OK"}); err != nil {
 					panic(err)
 				}
-				// PEvalでdistが更新された頂点集合はChangedNodeIDs()で取れる
-				// 更新された頂点が自分以外のworker所有かつ自分の所有している頂点を始点とする辺の終点であるならば送信する
 				// TODO: グラフを読み込んだ時点で，F.I/F.O/F.I'/F.O'を計算しておくべき
 				graph.PEvalDijkstra(w.weightedDirectedGraph, w.shortestPath)
-				for _, nid := range w.shortestPath.ChangedNodeIDs() {
+				if len(w.shortestPath.UpdatedNodeIDs()) == 0 {
+					w.isInactive = true
+					continue
+				}
+				log.Info().Msgf("PEval updates: UpdatedNodeIDs=%+v", w.shortestPath.UpdatedNodeIDs())
+				for _, nid := range w.shortestPath.UpdatedNodeIDs() {
 					owners := w.possessionTable[nid]
-					for owner := range owners {
-
+					for ownerID := range owners {
+						if ownerID != w.master.id && ownerID != w.id {
+							if err := w.SendMessage(w.peers[ownerID], MessageIncEvalUpdate{
+								from:  w.id,
+								round: w.round,
+								nid:   nid,
+								data:  w.shortestPath.DistOf(nid),
+							}); err != nil {
+								panic(err)
+							}
+						}
 					}
 				}
-				// TODO: IMPLEMENT PEval & send messages...
-			case msg := <- w.Receive(opcodePEvalResponse):
-				log.Info().Msgf("received PEval response from peer %d", msg.(MessagePEvalResponse).from)
-			case msg := <- w.Receive(opcodeIncEvalUpdate):
-				log.Info().Msgf("received PEval request from peer %d: <from=%d, round=%d, nid=%d, data=%f>",
+			case msg := <-w.Receive(opcodePEvalResponse):
+				log.Info().Msgf("received PEval response From peer %d", msg.(MessagePEvalResponse).from)
+			case msg := <-w.Receive(opcodeIncEvalUpdate):
+				w.isInactive = false
+				atomic.AddUint64(&w.round, 1)
+				log.Info().Msgf("received IncEval request From peer %d: <From=%d, round=%d, nid=%d, data=%f>",
 					msg.(MessageIncEvalUpdate).from,
 					msg.(MessageIncEvalUpdate).from,
 					msg.(MessageIncEvalUpdate).round,
 					msg.(MessageIncEvalUpdate).nid,
 					msg.(MessageIncEvalUpdate).data)
+				//updates := make([]graph.DistanceNode, len(w.Receive(opcodeIncEvalUpdate)))
+				//i := 0
+				//for msg := range w.Receive(opcodeIncEvalUpdate) {
+				//	updates[i] = graph.NewDistanceNode(msg.(MessageIncEvalUpdate).nid, msg.(MessageIncEvalUpdate).data)
+				//	i++
+				//}
+				graph.IncEvalDijkstra([]graph.DistanceNode{graph.NewDistanceNode(msg.(MessageIncEvalUpdate).nid, msg.(MessageIncEvalUpdate).data)}, w.weightedDirectedGraph, w.shortestPath)
+				log.Info().Msgf("IncEval updates: UpdatedNodeIDs=%+v", w.shortestPath.UpdatedNodeIDs())
+				for _, nid := range w.shortestPath.UpdatedNodeIDs() {
+					owners := w.possessionTable[nid]
+					log.Info().Msgf("inc update : owners=%+v", owners)
+					for ownerID := range owners {
+						if ownerID != w.master.id && ownerID != w.id {
+							log.Info().Msgf("owner=%+v", w.peers[ownerID])
+							if err := w.SendMessage(w.peers[ownerID], MessageIncEvalUpdate{
+								from:  w.id,
+								round: w.round,
+								nid:   nid,
+								data:  w.shortestPath.DistOf(nid),
+							}); err != nil {
+								panic(err)
+							}
+						}
+					}
+				}
+
+				if len(w.Receive(opcodeIncEvalUpdate)) == 0 {
+					w.isInactive = true
+					if err := w.SendMessage(w.master, MessageNotifyInactive{from: w.id}); err != nil {
+						panic(err)
+					}
+				}
+				//if len(w.shortestPath.UpdatedNodeIDs()) == 0 {
+				//	w.isInactive = true
+				//	if err := w.SendMessage(w.master, MessageNotifyInactive{from:w.id}); err != nil {
+				//		panic(err)
+				//	}
+				//	continue
+				//} else {
+				//	for _, nid := range w.shortestPath.UpdatedNodeIDs() {
+				//		owners := w.possessionTable[nid]
+				//		log.Info().Msgf("inc update : owners=%+v", owners)
+				//		for ownerID := range owners {
+				//			if ownerID != w.master.id && ownerID != w.id {
+				//				log.Info().Msgf("owner=%+v", w.peers[ownerID])
+				//				if err := w.SendMessage(w.peers[ownerID], MessageIncEvalUpdate{
+				//					from:  w.id,
+				//					round: w.round,
+				//					nid:   nid,
+				//					data:  w.shortestPath.DistOf(nid),
+				//				}); err != nil {
+				//					panic(err)
+				//				}
+				//			}
+				//		}
+				//	}
+				//}
 
 				// TODO: IMPLEMENT IncEval & send messages and incremental updatesが0の時にnotifyinactivをmasterに送信
 				// TODO: Incremntal updateを実行するたびにisinactiveをfalseにする
-			case msg := <- w.Receive(opcodeNotifyInactive):
-				log.Info().Msgf("received inactive notification from peer %d", msg.(MessageNotifyInactive).from)
+			case msg := <-w.Receive(opcodeNotifyInactive):
+				log.Info().Msgf("received inactive notification From peer %d", msg.(MessageNotifyInactive).from)
+				w.inactiveMap[msg.(MessageNotifyInactive).from] = true
 				flag := true
 				for _, status := range w.inactiveMap {
 					flag = flag && status
@@ -154,30 +262,38 @@ func (w *Worker) init() {
 						}
 					}
 				}
-			case msg := <- w.Receive(opcodeTerminate):
-				log.Info().Msgf("received terminate message from peer %d", msg.(MessageTerminate).from)
+			case msg := <-w.Receive(opcodeTerminate):
+				log.Info().Msgf("received terminate message From peer %d", msg.(MessageTerminate).from)
 				if w.isInactive {
-					if err := w.SendMessage(w.master, MessageTerminateACK{from:w.id}); err != nil {
+					if err := w.SendMessage(w.master, MessageTerminateACK{from: w.id}); err != nil {
 						panic(err)
 					}
 				}
-			case msg := <- w.Receive(opcodeTerminateACK):
-				log.Info().Msgf("received terminate message from peer %d", msg.(MessageTerminateACK).from)
-				for _, p := range w.peers {
-					if err := w.SendMessage(p, MessageAssembleRequest{
-						from:      w.id,
-						debugText: "ASSEMBLE",
-					}); err != nil {
-						panic(err)
+			case msg := <-w.Receive(opcodeTerminateACK):
+				log.Info().Msgf("received terminate ack message From peer %d", msg.(MessageTerminateACK).from)
+				w.terminateMap[msg.(MessageTerminateACK).from] = true
+				flag := true
+				for _, status := range w.terminateMap {
+					flag = flag && status
+				}
+				if flag {
+					for _, p := range w.peers {
+						if err := w.SendMessage(p, MessageAssembleRequest{
+							from:      w.id,
+							debugText: "ASSEMBLE",
+						}); err != nil {
+							panic(err)
+						}
 					}
 				}
-			case msg := <- w.Receive(opcodeAssembleRequest):
-				log.Info().Msgf("received Assemble request from peer %d", msg.(MessageAssembleRequest).from)
-				if err := w.SendMessage(w.master, MessageAssembleResponse{from:w.id, result:w.shortestPath.Result()}); err != nil {
+
+			case msg := <-w.Receive(opcodeAssembleRequest):
+				log.Info().Msgf("received Assemble request From peer %d", msg.(MessageAssembleRequest).from)
+				if err := w.SendMessage(w.master, MessageAssembleResponse{from: w.id, result: w.shortestPath.Result()}); err != nil {
 					panic(err)
 				}
-			case msg := <- w.Receive(opcodeAssembleResponse):
-				log.Info().Msgf("received Assemble response from peer %d, result: %+v",
+			case msg := <-w.Receive(opcodeAssembleResponse):
+				log.Info().Msgf("received Assemble response From peer %d, result: %+v",
 					msg.(MessageAssembleResponse).from, msg.(MessageAssembleResponse).result)
 			}
 		}
@@ -293,6 +409,7 @@ func (w *Worker) Listen() {
 		if err != nil {
 			continue
 		}
+		log.Info().Msgf("accept: %s", conn.RemoteAddr().String())
 		peer := NewPeer(w, conn)
 		peer.init() // go peer.messageReceiver()
 		// TODO: ここにいろいろ書けばpeerごとに実行される
@@ -302,8 +419,10 @@ func (w *Worker) Listen() {
 		select {
 		case msg := <-w.Receive(opcodeHello):
 			peerID := msg.(MessageHello).from
+			peer.id = peerID
 			w.peers[peerID] = peer
 			w.inactiveMap[peerID] = false
+			w.terminateMap[peerID] = false
 		}
 	}
 }
@@ -321,8 +440,10 @@ func (w *Worker) Dial(address string) (*Peer, error) {
 	select {
 	case msg := <-w.Receive(opcodeHello):
 		peerID := msg.(MessageHello).from
+		peer.id = peerID
 		w.peers[peerID] = peer
 		w.inactiveMap[peerID] = false
+		w.terminateMap[peerID] = false
 	}
 	return peer, nil
 }

@@ -81,6 +81,9 @@ func NewWeightedDirectedGraphFromCSV(address string, self, absent float64) (*Wei
 
 		nodeID, _ := strconv.ParseInt(record[0], 10, 64)
 		workerIDs := strings.Split(record[1], ":")
+
+		possessionTable[nodeID] = make(Uint64Set)
+
 		for _, _id := range workerIDs {
 			id, _ := strconv.ParseInt(_id, 10, 64)
 			possessionTable[nodeID].Add(uint64(id))
@@ -284,12 +287,9 @@ type ShortestPath struct {
 func NewShortestFrom(u Node, nodes []Node) *ShortestPath {
 	index := make(map[int64]int, len(nodes))
 	invIndex := make(map[int]int64, len(nodes))
-	uid := u.ID()
+	//uid := u.ID()
 	for i, n := range nodes {
 		index[n.ID()] = i
-		if n.ID() == uid {
-			u = n
-		}
 	}
 	for k, v := range index {
 		invIndex[v] = k
@@ -308,8 +308,12 @@ func NewShortestFrom(u Node, nodes []Node) *ShortestPath {
 		p.dist[i] = math.Inf(1)
 		p.next[i] = -1
 	}
-	p.dist[index[uid]] = 0
+	//p.dist[index[uid]] = 0
+	fmt.Printf("shorestPath.index: %+v\n", index)
 	return &p
+}
+func (s *ShortestPath) SetZero() {
+	s.dist[s.index[0]] = 0
 }
 func (s ShortestPath) From() Node {
 	return s.from
@@ -379,12 +383,14 @@ func (s ShortestPath) Set(to int, weight float64, mid int) {
 	s.dist[to] = weight
 	s.next[to] = mid
 	s.changed[s.invIndex[to]] = struct{}{}
+	fmt.Printf("set node id %d\n", s.invIndex[to])
 }
-func (s ShortestPath) ChangedNodeIDs() []int64 {
+func (s ShortestPath) UpdatedNodeIDs() []int64 {
 	ns := make([]int64, len(s.changed))
 	i := 0
 	for k := range s.changed {
 		ns[i] = k
+		i++
 	}
 	return ns
 }
@@ -397,6 +403,14 @@ func (s ShortestPath) Result() map[int64]float64 {
 		result[nid] = s.dist[idx]
 	}
 	return result
+}
+
+func Dijkstra() *ShortestPath {
+	weightedDirectedGraph, _ := NewWeightedDirectedGraphFromCSV("127.0.0.1:3003", 0.0, math.Inf(1))
+	shortestPath := NewShortestFrom(weightedDirectedGraph.Node(0), weightedDirectedGraph.Nodes())
+	shortestPath.SetZero()
+	PEvalDijkstra(weightedDirectedGraph, shortestPath)
+	return shortestPath
 }
 
 func PEvalDijkstra(graph *WeightedDirectedGraph, path *ShortestPath) {
@@ -431,20 +445,26 @@ func PEvalDijkstra(graph *WeightedDirectedGraph, path *ShortestPath) {
 }
 
 func IncEvalDijkstra(updates []DistanceNode, graph *WeightedDirectedGraph, path *ShortestPath) {
+	path.ClearChanged()
 	Q := priorityQueue{}
 	for _, u := range updates {
 		heap.Push(&Q, u)
 	}
+	fmt.Printf("Q: %+v\n", Q)
 	for Q.Len() != 0 {
 		mid := heap.Pop(&Q).(DistanceNode)
 		k := path.index[mid.node.ID()]
 		if mid.dist > path.dist[k] {
 			continue
 		}
+		path.dist[k] = mid.dist
 		mnid := mid.node.ID()
+		fmt.Printf("graph.From(mnid): %+v\n", graph.From(mnid))
 		for _, n := range graph.From(mnid) {
+			fmt.Printf("n: %+v\n", n)
 			vid := n.ID()
 			j, ok := path.index[vid]
+			fmt.Printf("j: %d\n", j)
 			if !ok {
 				j = path.Add(n)
 			}
@@ -456,6 +476,7 @@ func IncEvalDijkstra(updates []DistanceNode, graph *WeightedDirectedGraph, path 
 				panic("dijkstra: negative edge weight")
 			}
 			joint := path.dist[k] + w
+			fmt.Printf("joint: %+v\n", joint)
 			if joint < path.dist[j] {
 				heap.Push(&Q, DistanceNode{node: n, dist: joint})
 				path.Set(j, joint, k)
@@ -482,9 +503,9 @@ func NewDistanceNode(nid int64, dist float64) DistanceNode {
 
 type priorityQueue []DistanceNode
 
-func (pq priorityQueue) Len() int { return len(pq) }
+func (pq priorityQueue) Len() int           { return len(pq) }
 func (pq priorityQueue) Less(i, j int) bool { return pq[i].dist < pq[j].dist }
-func (pq priorityQueue) Swap(i, j int) { pq[i], pq[j] = pq[j], pq[i] }
+func (pq priorityQueue) Swap(i, j int)      { pq[i], pq[j] = pq[j], pq[i] }
 func (pq *priorityQueue) Push(n interface{}) {
 	*pq = append(*pq, n.(DistanceNode))
 }
